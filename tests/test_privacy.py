@@ -2,7 +2,6 @@
 Unit tests for privacy module.
 """
 
-import pytest
 from innersafe_mas.privacy import InformationBottleneckPrivacyGate
 
 

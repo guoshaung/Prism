@@ -3,7 +3,7 @@ Unit tests for copyright module.
 """
 
 import pytest
-from innersafe_mas.copyright import KnowledgeGraphAdapter, AdaptiveKGWWatermark
+from innersafe_mas.copyright import AdaptiveKGWWatermark
 from innersafe_mas.copyright.graph_adapter import MockKnowledgeGraph
 
 

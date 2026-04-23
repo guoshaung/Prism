@@ -12,6 +12,18 @@ license = { text = "Apache-2.0" }
 authors = [{ name = "InnerSafe Contributors" }]
 keywords = ["LLM", "multi-agent", "privacy", "watermark", "AI-safety"]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "black",
+    "mypy",
+    "ruff",
+]
+graph = [
+    "networkx>=2.8",
+]
+
 [tool.black]
 line-length = 88
 target-version = ["py39"]
