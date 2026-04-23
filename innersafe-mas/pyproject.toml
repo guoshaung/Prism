@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "innersafe-mas"
+version = "0.1.0"
+description = "Endogenous security governance framework for LLM Multi-Agent Systems."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "InnerSafe Contributors" }]
+keywords = ["LLM", "multi-agent", "privacy", "watermark", "AI-safety"]
+
+[tool.black]
+line-length = 88
+target-version = ["py39"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
