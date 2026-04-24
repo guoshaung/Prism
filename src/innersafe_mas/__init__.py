@@ -10,13 +10,29 @@ This package provides three core modules:
 __version__ = "0.1.0"
 
 from innersafe_mas.privacy.srpg_engine import InformationBottleneckPrivacyGate
-from innersafe_mas.copyright.kgw_watermark import AdaptiveKGWWatermark
-from innersafe_mas.copyright.graph_adapter import KnowledgeGraphAdapter
+from innersafe_mas.privacy import PresidioPrivacyAdapter
+from innersafe_mas.copyright import (
+    AdaptiveKGWWatermark,
+    HuggingFaceWrapper,
+    KnowledgeGraphAdapter,
+    MockKnowledgeGraph,
+    ParaphraseAttack,
+    TruncationAttack,
+    run_generation_attack_loop,
+    run_robustness_suite,
+)
 from innersafe_mas.governance.game_router import GameTheoryRouter
 
 __all__ = [
     "InformationBottleneckPrivacyGate",
+    "PresidioPrivacyAdapter",
     "AdaptiveKGWWatermark",
+    "HuggingFaceWrapper",
     "KnowledgeGraphAdapter",
+    "MockKnowledgeGraph",
+    "ParaphraseAttack",
+    "TruncationAttack",
     "GameTheoryRouter",
+    "run_generation_attack_loop",
+    "run_robustness_suite",
 ]

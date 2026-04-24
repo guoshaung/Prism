@@ -1,211 +1,215 @@
 """
-SRPG Information Bottleneck Privacy Gate.
+SRPG privacy gate built on top of a pluggable recognition layer.
 
-This module implements the Variational Information Bottleneck (VIB) approach
-for privacy-preserving data stream splitting in LLM Multi-Agent Systems.
-
-Theoretical Foundation:
-    Based on the Information Bottleneck principle, we aim to:
-    - Minimize mutual information between input X and sensitive latent Z_sensitive:
-      I(X; Z_sensitive) → min
-    - Maximize mutual information between logic latent Z_logic and output Y:
-      I(Z_logic; Y) → max
-
-    The optimization objective is:
-        L = I(X; Z_sensitive) - β * I(Z_logic; Y) + α * KL(q(Z|X) || p(Z))
-
-    Where:
-    - α: Regularization weight for KL divergence (prevents overfitting)
-    - β: Trade-off parameter (higher β = prioritize utility over privacy)
-    - cost: Computational cost penalty for complex transformations
+In the revised architecture, entity recognition is delegated to a lower-level
+adapter such as Microsoft Presidio, while SRPG remains responsible for
+stream-splitting, utility preservation, and privacy-aware execution.
 """
 
+from __future__ import annotations
+
 import re
-from typing import Dict, Tuple
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass(frozen=True)
+class SensitiveSpan:
+    """Structured record for one detected sensitive entity."""
+
+    entity_type: str
+    start: int
+    end: int
+    text: str
+    score: float = 1.0
+
+
+class _RegexAnalyzer:
+    """Fallback analyzer used when Presidio is unavailable."""
+
+    def __init__(self) -> None:
+        self.patterns: dict[str, str] = {
+            "PERSON": (
+                r"(?:(?<=患者)|(?<=病人)|(?<=医生建议)|(?<=建议)|(?<=姓名))"
+                r"(?:[\u4e00-\u9fff]{2}|[\u4e00-\u9fff]{3}|[\u4e00-\u9fff]{4})"
+                r"(?=(?:需要|继续|服用|复诊|观察|的|，|。|$))"
+            ),
+            "ID": r"\b\d{15,18}\b",
+            "PHONE_NUMBER": r"(?<!\d)1[3-9]\d{9}(?!\d)",
+            "EMAIL_ADDRESS": r"\b[\w\.-]+@[\w\.-]+\.\w+\b",
+        }
+
+    def analyze(self, text: str) -> list[SensitiveSpan]:
+        spans: list[SensitiveSpan] = []
+        for entity_type, pattern in self.patterns.items():
+            for match in re.finditer(pattern, text):
+                spans.append(
+                    SensitiveSpan(
+                        entity_type=entity_type,
+                        start=match.start(),
+                        end=match.end(),
+                        text=match.group(0),
+                        score=1.0,
+                    )
+                )
+        return sorted(spans, key=lambda span: (span.start, span.end))
+
+
+class PresidioPrivacyAdapter:
+    """
+    Adapter layer for privacy perception.
+
+    When Presidio is installed, this adapter uses it as the lower-level
+    recognizer/anonymizer. Otherwise, it falls back to a regex-based recognizer
+    so the research prototype remains runnable in lightweight environments.
+    """
+
+    def __init__(self) -> None:
+        self._engine_mode = "regex-fallback"
+        self._analyzer = _RegexAnalyzer()
+        self._presidio_analyzer: Any | None = None
+        self._presidio_anonymizer: Any | None = None
+
+        try:
+            from presidio_analyzer import AnalyzerEngine
+            from presidio_anonymizer import AnonymizerEngine
+
+            self._presidio_analyzer = AnalyzerEngine()
+            self._presidio_anonymizer = AnonymizerEngine()
+            self._engine_mode = "presidio"
+        except ImportError:
+            pass
+
+    @property
+    def engine_mode(self) -> str:
+        return self._engine_mode
+
+    def analyze(self, text: str) -> list[SensitiveSpan]:
+        if self._presidio_analyzer is None:
+            return self._analyzer.analyze(text)
+
+        results = self._presidio_analyzer.analyze(text=text, language="en")
+        spans = [
+            SensitiveSpan(
+                entity_type=result.entity_type,
+                start=result.start,
+                end=result.end,
+                text=text[result.start : result.end],
+                score=result.score,
+            )
+            for result in results
+        ]
+        return sorted(spans, key=lambda span: (span.start, span.end))
 
 
 class InformationBottleneckPrivacyGate:
     """
-    Privacy gate that splits input text into desensitized and logic streams.
+    SRPG execution layer above a pluggable privacy recognizer.
 
-    This class implements a simplified version of the SRPG (Stream Reconstruction
-    Privacy Gate) mechanism. In production, this would involve neural encoders
-    and variational inference. Here we use rule-based heuristics for demonstration.
-
-    Attributes:
-        sensitive_patterns: Regex patterns for detecting PII (names, IDs, etc.)
-        placeholder_prefix: Prefix for anonymized tokens
+    The recognizer detects sensitive spans; SRPG then decides how to protect
+    them while preserving as much downstream utility as possible.
     """
 
-    def __init__(self, placeholder_prefix: str = "[ANON_"):
-        """
-        Initialize the privacy gate.
-
-        Args:
-            placeholder_prefix: Prefix for anonymized sensitive tokens.
-        """
+    def __init__(
+        self,
+        placeholder_prefix: str = "[ANON_",
+        recognizer: PresidioPrivacyAdapter | None = None,
+    ) -> None:
         self.placeholder_prefix = placeholder_prefix
-        self.sensitive_patterns = {
-            # Chinese names (2-4 chars) in common clinical phrasing.
-            # Keep this heuristic broad enough to catch names at sentence end,
-            # e.g. "医生建议张三".
-            "name": r"(?:(?<=患者)|(?<=医生建议)|(?<=建议))[\u4e00-\u9fa5]{2,4}(?=服用|的|$)",
-            "id": r"\d{15,18}",  # ID numbers
-            "phone": r"1[3-9]\d{9}",  # Phone numbers
-            "email": r"[\w\.-]+@[\w\.-]+\.\w+",  # Email addresses
-        }
-        self._anonymization_map: Dict[str, str] = {}
+        self.recognizer = recognizer or PresidioPrivacyAdapter()
+        self._anonymization_map: dict[str, str] = {}
         self._counter = 0
 
-    def split_streams(self, text: str) -> Dict[str, str]:
+    def split_streams(self, text: str) -> dict[str, Any]:
         """
-        Split input text into desensitized and logic streams.
-
-        This method implements the core I(X; Z_sensitive) minimization by:
-        1. Detecting sensitive entities using pattern matching
-        2. Replacing them with anonymized placeholders in desensitized_stream
-        3. Preserving logical structure (medical terms, actions) in logic_stream
-
-        Mathematical Intuition:
-            desensitized_stream ≈ Z_logic (low mutual info with sensitive data)
-            logic_stream ≈ projection that maximizes I(Z_logic; Y)
-
-        Args:
-            text: Raw input text containing potential PII.
-
-        Returns:
-            Dictionary with two keys:
-            - "desensitized_stream": Text with PII replaced by placeholders
-            - "logic_stream": Extracted logical/semantic content
+        Split text into a privacy-safe stream and a utility-preserving stream.
         """
+        detected_spans = self.recognizer.analyze(text)
         desensitized = text
-        detected_entities = []
+        detected_entities: list[tuple[str, str, str]] = []
 
-        # Step 1: Detect and anonymize sensitive patterns
-        for entity_type, pattern in self.sensitive_patterns.items():
-            matches = re.finditer(pattern, text)
-            for match in matches:
-                original = match.group(0)
-                if original not in self._anonymization_map:
-                    self._counter += 1
-                    placeholder = f"{self.placeholder_prefix}{entity_type.upper()}_{self._counter}]"
-                    self._anonymization_map[original] = placeholder
-                else:
-                    placeholder = self._anonymization_map[original]
+        for span in detected_spans:
+            placeholder = self._placeholder_for(span.text, span.entity_type)
+            desensitized = desensitized.replace(span.text, placeholder)
+            detected_entities.append((span.entity_type, span.text, placeholder))
 
-                desensitized = desensitized.replace(original, placeholder)
-                detected_entities.append((entity_type, original, placeholder))
-
-        # Step 2: Extract logic stream (preserve domain-specific terms)
-        # In a real implementation, this would use NER or domain ontology
         logic_stream = self._extract_logic_tokens(desensitized)
-
         return {
             "desensitized_stream": desensitized,
             "logic_stream": logic_stream,
             "detected_entities": detected_entities,
+            "recognizer_backend": self.recognizer.engine_mode,
         }
 
-    def _extract_logic_tokens(self, text: str) -> str:
-        """
-        Extract logical/semantic tokens while filtering out noise.
-
-        This simulates the I(Z_logic; Y) maximization by keeping only
-        tokens that contribute to downstream task performance.
-
-        Args:
-            text: Desensitized text.
-
-        Returns:
-            Space-separated logical tokens.
-        """
-        # Mock implementation: keep medical terms, actions, symptoms
-        # In production, use domain-specific NER or knowledge graph
-        medical_keywords = [
-            "服用", "阿司匹林", "头痛", "症状", "诊断", "治疗",
-            "药物", "剂量", "副作用", "过敏", "检查", "报告"
-        ]
-
-        tokens = []
-        for keyword in medical_keywords:
-            if keyword in text:
-                tokens.append(keyword)
-
-        # Also preserve anonymized placeholders (they carry structural info)
-        placeholders = re.findall(r"\[ANON_[A-Z_0-9]+\]", text)
-        tokens.extend(placeholders)
-
-        return " ".join(tokens)
-
     def calculate_loss(
-        self, alpha: float, beta: float, cost: float
-    ) -> Tuple[float, Dict[str, float]]:
+        self,
+        alpha: float,
+        beta: float,
+        cost: float,
+    ) -> tuple[float, dict[str, float]]:
         """
-        Calculate the Information Bottleneck loss function.
-
-        This method computes the theoretical loss for the VIB objective:
-            L = I(X; Z_sensitive) - β * I(Z_logic; Y) + α * KL(q||p) + cost
-
-        In a real neural implementation, these terms would be estimated via:
-        - I(X; Z_sensitive): Estimated using variational bounds
-        - I(Z_logic; Y): Approximated via task-specific loss (e.g., cross-entropy)
-        - KL divergence: Computed between learned posterior q(Z|X) and prior p(Z)
-
-        Here we provide a mock calculation for demonstration.
-
-        Args:
-            alpha: Weight for KL regularization term (typical range: 0.01 - 0.1)
-            beta: Trade-off between privacy and utility (typical range: 0.1 - 10)
-                  Higher β → prioritize utility over privacy
-            cost: Computational cost penalty (e.g., inference latency)
-
-        Returns:
-            Tuple of (total_loss, loss_components_dict)
+        Compute a simple SRPG-style objective decomposition.
         """
-        # Mock values (in production, these would be computed from data)
-        i_x_z_sensitive = 2.5  # Mutual info with sensitive data (lower is better)
-        i_z_logic_y = 4.0  # Mutual info with task output (higher is better)
-        kl_divergence = 0.8  # KL(q(Z|X) || p(Z))
+        i_x_z_sensitive = 2.5
+        i_z_logic_y = 4.0
+        kl_divergence = 0.8
 
-        # Compute total loss
         privacy_term = i_x_z_sensitive
-        utility_term = -beta * i_z_logic_y  # Negative because we maximize this
+        utility_term = -beta * i_z_logic_y
         regularization_term = alpha * kl_divergence
         total_loss = privacy_term + utility_term + regularization_term + cost
 
-        components = {
+        return total_loss, {
             "privacy_leakage": privacy_term,
-            "utility_gain": -utility_term,  # Report as positive for clarity
+            "utility_gain": -utility_term,
             "regularization": regularization_term,
             "computational_cost": cost,
             "total_loss": total_loss,
         }
 
-        return total_loss, components
-
-    def get_anonymization_map(self) -> Dict[str, str]:
-        """
-        Retrieve the mapping from original sensitive data to placeholders.
-
-        This map should be stored securely on the client side and never
-        transmitted to the cloud. It enables local reconstruction if needed.
-
-        Returns:
-            Dictionary mapping original PII to anonymized placeholders.
-        """
+    def get_anonymization_map(self) -> dict[str, str]:
         return self._anonymization_map.copy()
 
     def reconstruct(self, desensitized_text: str) -> str:
-        """
-        Reconstruct original text from desensitized version (client-side only).
-
-        Args:
-            desensitized_text: Text with anonymized placeholders.
-
-        Returns:
-            Original text with PII restored.
-        """
         reconstructed = desensitized_text
         for original, placeholder in self._anonymization_map.items():
             reconstructed = reconstructed.replace(placeholder, original)
         return reconstructed
+
+    def _placeholder_for(self, original: str, entity_type: str) -> str:
+        if original not in self._anonymization_map:
+            self._counter += 1
+            label = entity_type.upper().replace(" ", "_")
+            self._anonymization_map[original] = (
+                f"{self.placeholder_prefix}{label}_{self._counter}]"
+            )
+        return self._anonymization_map[original]
+
+    def _extract_logic_tokens(self, text: str) -> str:
+        """
+        Preserve domain keywords and anonymized placeholders.
+        """
+        keywords = [
+            "aspirin",
+            "treatment",
+            "diagnosis",
+            "symptom",
+            "report",
+            "patient",
+            "doctor",
+            "medication",
+            "dose",
+            "allergy",
+            "检查",
+            "诊断",
+            "治疗",
+            "症状",
+            "患者",
+            "药物",
+        ]
+
+        lowered = text.lower()
+        tokens = [keyword for keyword in keywords if keyword.lower() in lowered]
+        placeholders = re.findall(r"\[ANON_[A-Z_0-9]+\]", text)
+        tokens.extend(placeholders)
+        return " ".join(tokens)
