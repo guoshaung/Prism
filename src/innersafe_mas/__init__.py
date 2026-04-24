@@ -15,6 +15,7 @@ from innersafe_mas.copyright import (
     AdaptiveKGWWatermark,
     HuggingFaceWrapper,
     KnowledgeGraphAdapter,
+    MockGenerationModel,
     MockKnowledgeGraph,
     ParaphraseAttack,
     TruncationAttack,
@@ -22,17 +23,33 @@ from innersafe_mas.copyright import (
     run_robustness_suite,
 )
 from innersafe_mas.governance.game_router import GameTheoryRouter
+from innersafe_mas.api import SecureService
+from innersafe_mas.llm import BaseLLMClient, MockLLMClient
+from innersafe_mas.pipeline import (
+    CopyrightAgent,
+    PrivacyAgent,
+    SecureInferencePipeline,
+    SecurityContext,
+)
 
 __all__ = [
     "InformationBottleneckPrivacyGate",
     "PresidioPrivacyAdapter",
     "AdaptiveKGWWatermark",
+    "SecureService",
+    "BaseLLMClient",
+    "MockLLMClient",
     "HuggingFaceWrapper",
     "KnowledgeGraphAdapter",
+    "MockGenerationModel",
     "MockKnowledgeGraph",
     "ParaphraseAttack",
     "TruncationAttack",
     "GameTheoryRouter",
+    "SecurityContext",
+    "PrivacyAgent",
+    "CopyrightAgent",
+    "SecureInferencePipeline",
     "run_generation_attack_loop",
     "run_robustness_suite",
 ]

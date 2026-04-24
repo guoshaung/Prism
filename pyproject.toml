@@ -23,6 +23,10 @@ dev = [
 graph = [
     "networkx>=2.8",
 ]
+privacy = [
+    "presidio-analyzer",
+    "presidio-anonymizer",
+]
 
 [tool.black]
 line-length = 88
